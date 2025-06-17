@@ -1,5 +1,5 @@
 # ===== 1. 环境安装 =====
-!pip install -q bitsandbytes  # 安装缺少的依赖
+!pip install -q bitsandbytes
 !pip install -q transformers accelerate torchvision datasets matplotlib opencv-python
 !pip install -q git+https://github.com/huggingface/transformers.git
 
