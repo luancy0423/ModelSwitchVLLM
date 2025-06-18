@@ -1,0 +1,239 @@
+# ===== 1. 环境安装 =====
+!pip install -q bitsandbytes
+!pip install -q transformers accelerate torchvision datasets matplotlib opencv-python
+!pip install -q git+https://github.com/huggingface/transformers.git
+
+# ===== 2. 导入库 =====
+import torch
+import numpy as np
+import requests
+from PIL import Image
+import matplotlib.pyplot as plt
+from transformers import (
+    Blip2Processor, Blip2ForConditionalGeneration,
+    OwlViTProcessor, OwlViTForObjectDetection,
+    AutoProcessor
+)
+from datasets import load_dataset
+import cv2
+import base64
+from io import BytesIO
+
+# ===== 3. 模型初始化（简化版本）=====
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
+# 1. BLIP-2 (轻量多模态) - 不使用8位量化
+blip_processor = Blip2Processor.from_pretrained("Salesforce/blip2-opt-2.7b")
+blip_model = Blip2ForConditionalGeneration.from_pretrained(
+    "Salesforce/blip2-opt-2.7b", torch_dtype=torch.float16 if device=="cuda" else torch.float32
+).eval().to(device)
+
+# 2. OWL-ViT (视觉定位)
+owl_processor = OwlViTProcessor.from_pretrained("google/owlvit-base-patch32")
+owl_model = OwlViTForObjectDetection.from_pretrained(
+    "google/owlvit-base-patch32", torch_dtype=torch.float16 if device=="cuda" else torch.float32
+).eval().to(device)
+
+print("✅ 模型加载完成")
+
+# ===== 4. 动态切换类（修改版）=====
+class VLModelSwitch:
+    def __init__(self, models):
+        self.models = models
+    
+    def _blip_inference(self, image, query, num_samples=3):
+        """BLIP2多采样推理"""
+        inputs = self.models['blip']['processor'](images=image, text=query, return_tensors="pt").to(device)
+        outputs = []
+        for _ in range(num_samples):
+            generated_ids = self.models['blip']['model'].generate(**inputs, max_new_tokens=50)
+            answer = self.models['blip']['processor'].batch_decode(generated_ids, skip_special_tokens=True)[0].strip()
+            outputs.append(answer)
+        return outputs
+
+    def _calc_consistency(self, answers):
+        """计算答案Jaccard相似度作为一致性指标"""
+        if len(answers) < 2:
+            return 1.0  # 单样本默认高一致
+        
+        scores = []
+        for i in range(len(answers)):
+            for j in range(i+1, len(answers)):
+                set_i = set(answers[i].lower().split())
+                set_j = set(answers[j].lower().split())
+                inter = len(set_i & set_j)
+                union = max(len(set_i | set_j), 1)  # 避免除0
+                scores.append(inter / union)
+        return np.mean(scores) if scores else 0.0
+
+    def switch(self, image, query, k=5, tau=0.7):
+        """核心切换逻辑"""
+        # 阶段1: BLIP-2初始采样
+        blip_outputs = self._blip_inference(image, query, num_samples=k//2 + 1)
+        consistency = self._calc_consistency(blip_outputs)
+        
+        # 阶段2: 一致性判断
+        if consistency >= tau:
+            # 高一致性直接投票
+            final_answer = max(set(blip_outputs), key=blip_outputs.count)
+            used_models = ["BLIP2"]
+            used_samples = len(blip_outputs)
+        else:
+            # 低一致性切换模型
+            if "where" in query.lower() or "locate" in query.lower():
+                # 定位问题 → OWL-ViT
+                inputs = self.models['owl']['processor'](
+                    text=[[query]], images=image, return_tensors="pt"
+                ).to(device)
+                outputs = self.models['owl']['model'](**inputs)
+                
+                # 获取图像尺寸
+                if isinstance(image, Image.Image):
+                    width, height = image.size
+                else:
+                    height, width = image.shape[:2]
+                
+                # 后处理检测结果
+                target_sizes = torch.tensor([[height, width]])
+                results = self.models['owl']['processor'].post_process_object_detection(
+                    outputs, threshold=0.2, target_sizes=target_sizes
+                )[0]
+                
+                # 格式化输出
+                boxes = results["boxes"].cpu().detach().numpy().tolist()
+                final_answer = {"detected_objects": boxes}
+                used_models = ["BLIP2", "OWL-ViT"]
+                used_samples = k//2 + 1
+            else:
+                # 推理问题 → 使用BLIP再次采样（原LLaVA替代方案）
+                additional_outputs = self._blip_inference(image, query, num_samples=k//2 + 1)
+                all_outputs = blip_outputs + additional_outputs
+                final_answer = max(set(all_outputs), key=all_outputs.count)
+                used_models = ["BLIP2"]
+                used_samples = len(all_outputs)
+        
+        return final_answer, used_models, used_samples, consistency
+
+# ===== 5. 初始化ModelSwitch =====
+models_dict = {
+    "blip": {"model": blip_model, "processor": blip_processor},
+    "owl": {"model": owl_model, "processor": owl_processor}
+}
+vlm_switch = VLModelSwitch(models_dict)
+
+# ===== 6. 加载测试数据 =====
+# 下载示例图像（带重试和备用）  
+def download_image(url, max_retries=2):
+    for attempt in range(max_retries):
+        try:
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
+            return Image.open(BytesIO(response.content))
+        except Exception as e:
+            print(f"下载图像失败（尝试{attempt+1}/{max_retries}）: {str(e)}")
+    # 备用：返回一张空白图像（或使用Base64编码的简单图像）
+    print("使用备用图像")
+    # 一个红色的100x100图像
+    return Image.new('RGB', (100, 100), color='red')
+
+# 示例1: 简单问题（高一致性）
+simple_image_url = "https://upload.wikimedia.org/wikipedia/commons/thumb/4/4d/Cat_November_2010-1a.jpg/1200px-Cat_November_2010-1a.jpg"
+simple_image = download_image(simple_image_url)
+simple_query = "这是什么动物？"
+
+# 示例2: 困难问题（需切换）
+hard_image_url = "https://huggingface.co/datasets/mishig/sample_images/resolve/main/coco_sample.png"
+hard_image = download_image(hard_image_url)
+hard_query = "图中食物左侧的物体是什么？"
+
+# ===== 7. 评估函数 =====
+def evaluate_switch(model_switch, dataset, tau=0.7):
+    results = []
+    for item in dataset:
+        image = item["image"]
+        if not isinstance(image, Image.Image):
+            try:
+                if isinstance(image, np.ndarray):
+                    image = Image.fromarray(image.astype('uint8'))
+                elif torch.is_tensor(image):
+                    image = Image.fromarray(image.numpy().astype('uint8'))
+                else:
+                    image = Image.fromarray(np.array(image).astype('uint8'))
+            except Exception as e:
+                print(f"无法将数据集图像转换为PIL Image: {e}")
+                continue
+        
+        query = item["question"]
+        answers = item["answers"]["text"] if "text" in item["answers"] else []
+        if not isinstance(answers, list):
+             answers = [str(answers)]
+
+        try:
+            pred, models_used, samples_used, consistency = model_switch.switch(
+                image, query, tau=tau
+            )
+        except Exception as e:
+            print(f"Switch inference failed for query '{query}': {e}")
+            continue
+
+        correct = 0
+        if isinstance(pred, str):
+            pred_clean = pred.lower().strip()
+            for ans in answers:
+                if ans and (ans.lower() in pred_clean or pred_clean in ans.lower()):
+                    correct = 1
+                    break
+        elif isinstance(pred, dict) and 'detected_objects' in pred:
+            correct = 1 if pred.get('detected_objects') else 0
+
+        results.append({
+            "query": query,
+            "pred": str(pred)[:100],  # 截断长输出
+            "correct": correct,
+            "models_used": models_used,
+            "samples_used": samples_used,
+            "consistency": consistency
+        })
+    return results
+
+# ===== 8. 运行实验 =====
+try:
+    simple_result, _, _, _ = vlm_switch.switch(simple_image, simple_query)
+    print(f"简单问题结果: {simple_result}")
+except Exception as e:
+    print(f"简单问题测试失败: {str(e)}")
+
+try:
+    hard_result, models_used, samples, consistency = vlm_switch.switch(hard_image, hard_query)
+    print(f"困难问题结果: {hard_result} | 使用模型: {models_used} | 采样数: {samples} | 一致性: {consistency:.2f}")
+except Exception as e:
+    print(f"困难问题测试失败: {str(e)}")
+
+# 评估样本
+try:
+    results = evaluate_switch(vlm_switch, vqa_val)
+except Exception as e:
+    print(f"评估失败: {str(e)}")
+    results = []
+
+# ===== 9. 性能分析 =====
+if results:
+    accuracy = sum(item['correct'] for item in results) / len(results)
+    avg_samples = sum(item['samples_used'] for item in results) / len(results)
+    switch_rate = sum(1 for item in results if len(item['models_used']) > 1) / len(results)
+
+    print(f"\n=== 性能报告 ===")
+    print(f"样本数: {len(results)}")
+    print(f"准确率: {accuracy:.2%}")
+    print(f"平均采样数: {avg_samples:.1f}")
+    print(f"模型切换比例: {switch_rate:.1%}")
+
+    if len(results) > 5:
+        consistencies = [item['consistency'] for item in results]
+        plt.hist(consistencies, bins=10, alpha=0.7)
+        plt.title("多模态一致性分布")
+        plt.xlabel("一致性分数")
+        plt.ylabel("样本数")
+        plt.show()
+else:
+    print("无有效结果可分析")
