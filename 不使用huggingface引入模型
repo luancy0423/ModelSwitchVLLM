@@ -196,6 +196,21 @@ HARD_IMAGE_URL = "https://www.gstatic.com/webp/gallery/4.jpg"    # 复杂图像
 simple_image = download_image(SIMPLE_IMAGE_URL)
 hard_image = download_image(HARD_IMAGE_URL)
 
+# 显示测试图像
+plt.figure(figsize=(10, 4))
+plt.subplot(1, 2, 1)
+plt.imshow(simple_image)
+plt.title("简单测试图像")
+plt.axis('off')
+
+plt.subplot(1, 2, 2)
+plt.imshow(hard_image)
+plt.title("复杂测试图像")
+plt.axis('off')
+
+plt.tight_layout()
+plt.show()
+
 # 查询
 simple_query = "这是什么？"
 hard_query = "图中有什么物体？"
@@ -296,27 +311,29 @@ if results:
     print(f"平均采样数: {avg_samples:.1f}")
     print(f"模型切换比例: {switch_rate:.1%}")
 
-    # 简单可视化
+    # 简单可视化 - 使用英文标签
     plt.figure(figsize=(12, 6))
     
-    # 子图1: 正确率
+    # 子图1: 正确率分布图
     plt.subplot(1, 2, 1)
     correct_count = sum(1 for item in results if item['correct'])
-    plt.bar(['正确', '错误'], [correct_count, len(results)-correct_count], color=['green', 'red'])
-    plt.title('正确率')
-    plt.ylabel('样本数量')
+    incorrect_count = len(results) - correct_count
+    plt.bar(['Correct', 'Incorrect'], [correct_count, incorrect_count], 
+            color=['green', 'red'])
+    plt.title('Accuracy Distribution')
+    plt.ylabel('Number of Samples')
     
-    # 子图2: 模型使用情况
+    # 子图2: 模型使用情况图
     plt.subplot(1, 2, 2)
-    model_usage = {'仅BLIP2': 0, 'BLIP2+OWL-ViT': 0}
+    model_usage = {'BLIP2 Only': 0, 'BLIP2+OWL-ViT': 0}
     for item in results:
         if len(item['models_used']) > 1:
             model_usage['BLIP2+OWL-ViT'] += 1
         else:
-            model_usage['仅BLIP2'] += 1
+            model_usage['BLIP2 Only'] += 1
     plt.bar(model_usage.keys(), model_usage.values(), color=['blue', 'orange'])
-    plt.title('模型使用情况')
-    plt.ylabel('使用次数')
+    plt.title('Model Usage')
+    plt.ylabel('Usage Count')
     
     plt.tight_layout()
     plt.show()
