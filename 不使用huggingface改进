@@ -13,6 +13,7 @@ from io import BytesIO
 import time
 import logging
 import cv2
+import random
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -52,7 +53,7 @@ def download_model(url, model_name, max_retries=3):
             response = requests.get(url, stream=True)
             response.raise_for_status()
             
-            with open(model极ath, 'wb') as f:
+            with open(model_path, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     f.write(chunk)
             
@@ -122,7 +123,7 @@ class VLModelSwitch:
     def __init__(self, models):
         self.models = models
     
-    def _blip_inference(self, image, query, num_samples=5):  # 增加采样数到5
+    def _blip_inference(self, image, query, num_samples=5):
         """增强的BLIP推理逻辑"""
         if not self.models['blip']:
             return ["模型不可用"]
@@ -184,7 +185,7 @@ class VLModelSwitch:
                 [100, 200, 200, 300]
             ]}
 
-    def switch(self, image, query, k=10, tau=0.4):  # 增加采样数到10，降低阈值到0.4
+    def switch(self, image, query, k=10, tau=0.4):
         """优化的模型切换逻辑"""
         # 阶段1: BLIP-2初始采样
         blip_outputs = self._blip_inference(image, query, num_samples=k//2 + 1)
@@ -220,7 +221,7 @@ models_dict = {
 }
 vlm_switch = VLModelSwitch(models_dict)
 
-# ===== 8. 加载测试图像 =====
+# ===== 8. 加载测试图像 - 增强版（使用多个可靠图像）=====
 def download_image(url, max_retries=3):
     """下载图像或创建备用图像"""
     for attempt in range(max_retries):
@@ -235,97 +236,143 @@ def download_image(url, max_retries=3):
     
     logger.info("使用备用图像")
     # 创建简单图像
-    img = Image.new('RGB', (224, 224), color='blue')
+    color = random.choice(['red', 'green', 'blue', 'yellow'])
+    img = Image.new('RGB', (224, 224), color=color)
     return img
 
-# 示例图像URL（使用公开可访问的URL）
-SIMPLE_IMAGE_URL = "https://www.gstatic.com/webp/gallery/1.jpg"  # 简单图像
-HARD_IMAGE_URL = "https://www.gstatic.com/webp/gallery/4.jpg"    # 复杂图像
+# 多个可靠的图像URL
+IMAGE_URLS = [
+    "https://www.gstatic.com/webp/gallery/1.jpg",  # 简单图像1
+    "https://www.gstatic.com/webp/gallery/2.jpg",  # 简单图像2
+    "https://www.gstatic.com/webp/gallery/3.jpg",  # 中等图像
+    "https://www.gstatic.com/webp/gallery/4.jpg",  # 复杂图像1
+    "https://www.gstatic.com/webp/gallery/5.jpg",  # 复杂图像2
+    "https://upload.wikimedia.org/wikipedia/commons/thumb/e/e4/Couple_in_New_York.jpg/320px-Couple_in_New_York.jpg",  # 包含人物
+    "https://upload.wikimedia.org/wikipedia/commons/thumb/d/dd/Full_house_in_music_festival.jpg/320px-Full_house_in_music_festival.jpg",  # 人群
+    "https://upload.wikimedia.org/wikipedia/commons/thumb/f/f8/2021_Toyota_C-HR_%28MXB10R%29_GX_hybrid_hatchback_%282021-08-27%29_01.jpg/320px-2021_Toyota_C-HR_%28MXB10R%29_GX_hybrid_hatchback_%282021-08-27%29_01.jpg",  # 汽车
+    "https://upload.wikimedia.org/wikipedia/commons/thumb/5/57/Kitchen_Things.jpg/320px-Kitchen_Things.jpg"  # 多个物体
+]
 
-# 下载图像
-simple_image = download_image(SIMPLE_IMAGE_URL)
-hard_image = download_image(HARD_IMAGE_URL)
+# 下载8个测试图像
+test_images = [download_image(url) for url in IMAGE_URLS]
 
 # 显示测试图像
-plt.figure(figsize=(10, 4))
-plt.subplot(1, 2, 1)
-plt.imshow(simple_image)
-plt.title("简单测试图像")
-plt.axis('off')
-
-plt.subplot(1, 2, 2)
-plt.imshow(hard_image)
-plt.title("复杂测试图像")
-plt.axis('off')
+plt.figure(figsize=(15, 8))
+for i in range(len(test_images)):
+    plt.subplot(2, 4, i+1)
+    plt.imshow(test_images[i])
+    plt.title(f"测试图像 {i+1}")
+    plt.axis('off')
 
 plt.tight_layout()
 plt.show()
 
-# 查询
-simple_query = "这是什么？"
-hard_query = "图中有什么物体？"
-location_query = "物体在什么位置？"  # 新增定位查询
-
-# ===== 9. 创建评估数据集 =====
-logger.info("创建内置评估数据集...")
+# ===== 9. 创建全面评估数据集 - 增加到16个样本 =====
+logger.info("创建全面评估数据集...")
 vqa_val = [
+    # 简单识别类问题
     {
-        "image": simple_image,
+        "image": test_images[0],
         "question": "这是什么？",
         "answers": {"text": ["花", "花朵"]}
     },
     {
-        "image": hard_image,
-        "question": "图中有什么物体？",
-        "answers": {"text": ["叶子", "植物"]}
+        "image": test_images[1],
+        "question": "图片中有什么？",
+        "answers": {"text": ["树", "植物"]}
     },
     {
-        "image": simple_image,
-        "question": "这是什么颜色？",
-        "answers": {"text": ["蓝色", "深蓝"]}
+        "image": test_images[2],
+        "question": "主要对象是什么？",
+        "answers": {"text": ["水果", "西瓜"]}
     },
     {
-        "image": hard_image,
-        "question": "在哪里能找到物体？",
-        "answers": {"text": ["在图像中", "整个图像"]}
+        "image": test_images[3],
+        "question": "描述这个场景",
+        "answers": {"text": ["城市景观", "建筑"]}
     },
-    # 新增更多定位相关的查询
+    
+    # 颜色类问题
     {
-        "image": simple_image,
-        "question": "物体在什么位置？",
+        "image": test_images[0],
+        "question": "花的颜色是什么？",
+        "answers": {"text": ["黄色", "黄"]}
+    },
+    {
+        "image": test_images[4],
+        "question": "天空是什么颜色？",
+        "answers": {"text": ["蓝色", "蓝"]}
+    },
+    
+    # 位置/检测类问题（触发模型切换）
+    {
+        "image": test_images[5],
+        "question": "人物在什么位置？",
         "answers": {"text": ["在图像中", "中心位置"]}
     },
     {
-        "image": hard_image,
-        "question": "检测图中的物体位置",
+        "image": test_images[6],
+        "question": "人群的主要聚集区在哪里？",
+        "answers": {"text": ["舞台前", "前排"]}
+    },
+    {
+        "image": test_images[5],
+        "question": "检测图中所有人物的位置",
         "answers": {"text": ["在图像中", "多个位置"]}
     },
     {
-        "image": simple_image,
-        "question": "找出物体的坐标",
+        "image": test_images[7],
+        "question": "汽车在什么位置？",
         "answers": {"text": ["在图像中", "中心位置"]}
     },
     {
-        "image": hard_image,
-        "question": "定位图中的物体",
+        "image": test_images[7],
+        "question": "找出汽车的车牌位置",
+        "answers": {"text": ["前方下方", "保险杠上方"]}
+    },
+    {
+        "image": test_images[8],
+        "question": "定位图中所有厨房用具",
         "answers": {"text": ["在图像中", "多个位置"]}
+    },
+    {
+        "image": test_images[8],
+        "question": "找出图片中的水壶",
+        "answers": {"text": ["在右侧", "右边"]}
+    },
+    
+    # 混合类问题
+    {
+        "image": test_images[5],
+        "question": "描述图片中的人物关系",
+        "answers": {"text": ["情侣", "夫妻"]}
+    },
+    {
+        "image": test_images[4],
+        "question": "图片中有多少辆车？",
+        "answers": {"text": ["2辆", "两辆"]}
+    },
+    {
+        "image": test_images[8],
+        "question": "厨房的主要区域在哪里？",
+        "answers": {"text": ["右侧", "右边"]}
     }
 ]
 logger.info(f"创建了 {len(vqa_val)} 个评估样本")
 
 # ===== 10. 评估函数 =====
-def evaluate_switch(model_switch, dataset, tau=0.4):  # 使用更低的阈值
+def evaluate_switch(model_switch, dataset, tau=0.4):
     results = []
     for idx, item in enumerate(dataset):
         image = item["image"]
-        query = item["question"]
+        query = item["question"]  # 确保使用正确的键名
         answers = item["answers"]["text"]
         
         if not isinstance(answers, list):
             answers = [str(answers)]
 
         try:
-            logger.info(f"处理查询: {query}")
+            logger.info(f"处理查询 {idx+1}/{len(dataset)}: {query}")
             pred, models_used, samples_used, consistency = model_switch.switch(image, query, tau=tau)
         except Exception as e:
             logger.error(f"Switch 推理失败: {e}")
@@ -353,29 +400,17 @@ def evaluate_switch(model_switch, dataset, tau=0.4):  # 使用更低的阈值
     return results
 
 # ===== 11. 运行实验 =====
-logger.info("运行简单测试...")
-try:
-    simple_result, _, _, _ = vlm_switch.switch(simple_image, simple_query)
-    logger.info(f"简单问题结果: {simple_result}")
-except Exception as e:
-    logger.error(f"简单问题测试失败: {str(e)}")
-
-logger.info("运行困难测试...")
-try:
-    hard_result, models_used, samples, consistency = vlm_switch.switch(hard_image, hard_query)
-    logger.info(f"困难问题结果: {hard_result} | 使用模型: {models_used} | 采样数: {samples} | 一致性: {consistency:.2f}")
-except Exception as e:
-    logger.error(f"困难问题测试失败: {str(e)}")
-
 logger.info("运行定位测试...")
 try:
-    location_result, models_used, samples, consistency = vlm_switch.switch(hard_image, location_query)
-    logger.info(f"定位问题结果: {location_result} | 使用模型: {models_used} | 采样数: {samples} | 一致性: {consistency:.2f}")
+    for i, img in enumerate(test_images):
+        location_query = f"图片{i+1}中的主要物体位置是？"
+        location_result, models_used, samples, consistency = vlm_switch.switch(img, location_query)
+        logger.info(f"图像 {i+1} 定位结果: {location_result} | 使用模型: {models_used} | 采样数: {samples} | 一致性: {consistency:.2f}")
 except Exception as e:
-    logger.error(f"定位问题测试失败: {str(e)}")
+    logger.error(f"定位测试失败: {str(e)}")
 
 # ===== 12. 性能评估报告 =====
-logger.info("开始评估...")
+logger.info("开始全面评估...")
 results = evaluate_switch(vlm_switch, vqa_val)
 logger.info(f"评估完成，处理样本数: {len(results)}")
 
@@ -383,18 +418,25 @@ if results:
     accuracy = sum(item['correct'] for item in results) / len(results)
     avg_samples = sum(item['samples_used'] for item in results) / len(results)
     switch_rate = sum(1 for item in results if len(item['models_used']) > 1) / len(results)
-
-    print(f"\n=== 性能报告 ===")
+    
+    # 统计模型切换分布
+    switch_queries = [item['query'] for item in results if len(item['models_used']) > 1]
+    non_switch_queries = [item['query'] for item in results if len(item['models_used']) == 1]
+    
+    print(f"\n=== 综合性能报告 ===")
     print(f"样本数: {len(results)}")
     print(f"准确率: {accuracy:.2%}")
     print(f"平均采样数: {avg_samples:.1f}")
     print(f"模型切换比例: {switch_rate:.1%}")
+    print(f"触发切换的查询数量: {len(switch_queries)}")
+    print(f"触发切换的查询示例: {switch_queries[:3]}")
+    print(f"没有触发切换的查询示例: {non_switch_queries[:3]}")
 
-    # 简单可视化 - 使用英文标签
-    plt.figure(figsize=(12, 6))
+    # 可视化 - 英文标签
+    plt.figure(figsize=(16, 12))
     
-    # 子图1: 正确率分布图
-    plt.subplot(1, 2, 1)
+    # 1. 准确率分布图
+    plt.subplot(2, 2, 1)
     correct_count = sum(1 for item in results if item['correct'])
     incorrect_count = len(results) - correct_count
     plt.bar(['Correct', 'Incorrect'], [correct_count, incorrect_count], 
@@ -402,51 +444,66 @@ if results:
     plt.title('Accuracy Distribution')
     plt.ylabel('Number of Samples')
     
-    # 子图2: 模型使用情况图
-    plt.subplot(1, 2, 2)
+    # 2. 模型使用情况
+    plt.subplot(2, 2, 2)
     model_usage = {'BLIP2 Only': 0, 'BLIP2+OWL-ViT': 0}
     for item in results:
         if len(item['models_used']) > 1:
             model_usage['BLIP2+OWL-ViT'] += 1
         else:
             model_usage['BLIP2 Only'] += 1
-    
     plt.bar(model_usage.keys(), model_usage.values(), color=['blue', 'orange'])
     plt.title('Model Usage')
     plt.ylabel('Usage Count')
     
+    # 3. 一致性分布
+    plt.subplot(2, 2, 3)
+    consistencies = [item['consistency'] for item in results]
+    plt.hist(consistencies, bins=10, alpha=0.7, color='purple')
+    plt.axvline(x=tau, color='r', linestyle='--', label='Switching Threshold')
+    plt.title('Consistency Score Distribution')
+    plt.xlabel('Consistency Score')
+    plt.ylabel('Number of Samples')
+    plt.legend()
+    
+    # 4. 采样数分布
+    plt.subplot(2, 2, 4)
+    samples_count = [item['samples_used'] for item in results]
+    plt.hist(samples_count, bins=range(0, 16, 1), alpha=0.7, color='teal')
+    plt.title('Sampling Count Distribution')
+    plt.xlabel('Sampling Count')
+    plt.ylabel('Number of Samples')
+    
     plt.tight_layout()
     plt.show()
     
-    # 新增：模型切换分析
-    plt.figure(figsize=(10, 6))
+    # 模型切换分析
+    plt.figure(figsize=(12, 6))
     switch_samples = [item for item in results if len(item['models_used']) > 1]
     non_switch_samples = [item for item in results if len(item['models_used']) == 1]
     
     # 切换样本的一致性分布
-    plt.subplot(2, 1, 1)
-    switch_consistency = [item['consistency'] for item in switch_samples]
-    non_switch_consistency = [item['consistency'] for item in non_switch_samples]
+    if switch_samples:
+        plt.subplot(1, 2, 1)
+        switch_consistency = [item['consistency'] for item in switch_samples]
+        non_switch_consistency = [item['consistency'] for item in non_switch_samples]
+        plt.hist([switch_consistency, non_switch_consistency], 
+                bins=10, label=['Switched Samples', 'Non-Switched Samples'], alpha=0.7)
+        plt.axvline(x=tau, color='r', linestyle='--', label='Threshold')
+        plt.title('Consistency Scores by Switching')
+        plt.xlabel('Consistency Score')
+        plt.ylabel('Number of Samples')
+        plt.legend()
     
-    plt.hist([switch_consistency, non_switch_consistency], 
-             bins=10, label=['切换样本', '非切换样本'], alpha=0.7)
-    plt.axvline(x=0.4, color='r', linestyle='--', label='切换阈值')
-    plt.title('一致性分数分布')
-    plt.xlabel('一致性分数')
-    plt.ylabel('样本数量')
-    plt.legend()
-    
-    # 切换样本的采样数分布
-    plt.subplot(2, 1, 2)
-    switch_samples_count = [item['samples_used'] for item in switch_samples]
-    non_switch_samples_count = [item['samples_used'] for item in non_switch_samples]
-    
-    plt.hist([switch_samples_count, non_switch_samples_count], 
-             bins=range(0, 16, 1), label=['切换样本', '非切换样本'], alpha=0.7)
-    plt.title('采样数分布')
-    plt.xlabel('采样数')
-    plt.ylabel('样本数量')
-    plt.legend()
+    # 切换样本的准确率分布
+    plt.subplot(1, 2, 2)
+    switch_accuracy = sum(1 for item in switch_samples if item['correct']) / len(switch_samples) if switch_samples else 0
+    non_switch_accuracy = sum(1 for item in non_switch_samples if item['correct']) / len(non_switch_samples) if non_switch_samples else 0
+    plt.bar(['Switched', 'Non-Switched'], [switch_accuracy, non_switch_accuracy], 
+            color=['orange', 'blue'])
+    plt.title('Accuracy by Switching Type')
+    plt.ylabel('Accuracy')
+    plt.ylim(0, 1)
     
     plt.tight_layout()
     plt.show()
